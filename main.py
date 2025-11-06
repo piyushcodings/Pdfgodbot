@@ -25,8 +25,8 @@ import subprocess
 # -----------------------------
 # Config via environment
 # -----------------------------
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
+API_ID = int(os.getenv("API_ID", "23907288"))
+API_HASH = os.getenv("API_HASH", "f9a47570ed19aebf8eb0f0a5ec1111e5")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8334418090:AAF0MjtAhQ9RzbyAxtHh6m-yXF6VrYfO-OM")
 
 if not all([API_ID, API_HASH, BOT_TOKEN]):
