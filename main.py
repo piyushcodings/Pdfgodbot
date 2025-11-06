@@ -27,7 +27,7 @@ import subprocess
 # -----------------------------
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8334418090:AAF0MjtAhQ9RzbyAxtHh6m-yXF6VrYfO-OM")
 
 if not all([API_ID, API_HASH, BOT_TOKEN]):
     raise SystemExit("Please set API_ID, API_HASH, BOT_TOKEN as environment variables.")
