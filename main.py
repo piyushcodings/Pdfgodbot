@@ -144,27 +144,36 @@ def ensure_pdf(path: str) -> bool:
 
 def compress_pdf(input_path: str, output_path: str, quality: int = 75):
     """
-    Compress PDF by re-rendering pages as new PDF using PyMuPDF.
-    Works with all pikepdf versions and doesn't need optimize_images.
+    Compress PDF by rasterizing pages and saving as images.
+    Works across all PyMuPDF versions (1.20+).
     """
     try:
         doc = fitz.open(input_path)
         new_doc = fitz.open()
 
         for page in doc:
-            pix = page.get_pixmap(dpi=100)  # lower DPI = smaller size
-            img = fitz.Pixmap(pix, 0) if pix.alpha else pix
-            img_bytes = img.tobytes("jpeg", quality=quality)
-            img_rect = fitz.Rect(0, 0, pix.width, pix.height)
-            page_pdf = new_doc.new_page(width=img_rect.width, height=img_rect.height)
-            page_pdf.insert_image(img_rect, stream=img_bytes)
+            pix = page.get_pixmap(dpi=120, alpha=False)
 
+            # Create a new page same size
+            page_rect = fitz.Rect(0, 0, pix.width, pix.height)
+            page_pdf = new_doc.new_page(width=page_rect.width, height=page_rect.height)
+
+            # Handle version differences (PyMuPDF >=1.24 removed 'quality' param)
+            try:
+                img_bytes = pix.tobytes("jpeg", quality=quality)
+            except TypeError:
+                # fallback for newer PyMuPDF versions (no quality argument)
+                img_bytes = pix.tobytes("jpeg")
+
+            page_pdf.insert_image(page_rect, stream=img_bytes)
+
+        # Save with deflate compression
         new_doc.save(output_path, deflate=True)
         new_doc.close()
         doc.close()
+
     except Exception as e:
         raise RuntimeError(f"Compression failed: {e}")
-
 
 def merge_pdfs(paths: List[str], output_path: str):
     merger = PdfMerger()
@@ -430,28 +439,29 @@ async def all_callbacks(client: Client, cq: CallbackQuery):
         msg = await cq.message.edit_text("🖨️ Starting scan...")
 
         async def run_scan():
-            last_update = 0
+    last_update = 0
 
-            def progress_callback(current, total):
-                nonlocal last_update
-                now = time.time()
-                if now - last_update > 1:  # throttle updates
-                    last_update = now
-                    asyncio.run_coroutine_threadsafe(
-                        msg.edit_text(f"🖨️ Scanning... Page {current}/{total}"),
-                        app.loop
-                    )
+    def progress_callback(current, total):
+        nonlocal last_update
+        now = time.time()
+        if now - last_update > 1:  # update every ~1s
+            last_update = now
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(
+                asyncio.create_task,
+                msg.edit_text(f"🖨️ Scanning... Page {current}/{total}")
+            )
 
-            try:
-                await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
-                note = " (with OCR)" if s.ocr_available else ""
-                await msg.edit_text("✅ Scan complete! Uploading...")
-                await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}", reply_to=cq.message)
-            except Exception as e:
-                await msg.edit_text(f"❌ Scan failed: `{e}`")
-            finally:
-                s.mode = Mode.IDLE
-                s.target_file = None
+    try:
+        await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
+        note = " (with OCR)" if s.ocr_available else ""
+        await msg.edit_text("✅ Scan complete! Uploading...")
+        await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}", reply_to=cq.message)
+    except Exception as e:
+        await msg.edit_text(f"❌ Scan failed: `{e}`")
+    finally:
+        s.mode = Mode.IDLE
+        s.target_file = None
 
         # Run the scan in background
         asyncio.create_task(run_scan())
