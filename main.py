@@ -439,31 +439,42 @@ async def all_callbacks(client: Client, cq: CallbackQuery):
         msg = await cq.message.edit_text("🖨️ Starting scan...")
 
         async def run_scan():
-    last_update = 0
+            last_update = 0
 
-    def progress_callback(current, total):
-        nonlocal last_update
-        now = time.time()
-        if now - last_update > 1:  # update every ~1s
-            last_update = now
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(
-                asyncio.create_task,
-                msg.edit_text(f"🖨️ Scanning... Page {current}/{total}")
-            )
+            def progress_callback(current, total):
+                nonlocal last_update
+                now = time.time()
+                if now - last_update > 1:  # update every ~1 s
+                    last_update = now
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(
+                        asyncio.create_task,
+                        msg.edit_text(f"🖨️ Scanning... Page {current}/{total}")
+                    )
 
-    try:
-        await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
-        note = " (with OCR)" if s.ocr_available else ""
-        await msg.edit_text("✅ Scan complete! Uploading...")
-        await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}", reply_to=cq.message)
-    except Exception as e:
-        await msg.edit_text(f"❌ Scan failed: `{e}`")
-    finally:
-        s.mode = Mode.IDLE
-        s.target_file = None
+            try:
+                # run heavy work in background thread
+                await asyncio.to_thread(
+                    pdf_scan, in_path, out_path, s.ocr_available, progress_callback
+                )
+                note = " (with OCR)" if s.ocr_available else ""
+                await msg.edit_text("✅ Scan complete! Uploading...")
+                await send_document_with_progress(
+                    cq.message.chat.id,
+                    out_path,
+                    f"✅ Scanned{note}",
+                    reply_to=cq.message
+                )
+            except Exception as e:
+                await msg.edit_text(f"❌ Scan failed: `{e}`")
+            finally:
+                s.mode = Mode.IDLE
+                s.target_file = None
 
-        # Run the scan in background
+        # launch scan in background so bot stays responsive
         asyncio.create_task(run_scan())
         return
 
