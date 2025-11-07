@@ -302,20 +302,25 @@ async def reset_cmd(client: Client, message: Message):
 # -----------------------------
 # Callback actions
 # -----------------------------
+# -----------------------------
+# SINGLE CALLBACK HANDLER (fixes compress/scan)
+# -----------------------------
 @app.on_callback_query()
-async def callbacks(client: Client, cq: CallbackQuery):
-    uid = cq.from_user.id
-    s = get_session(uid)
+async def all_callbacks(client: Client, cq: CallbackQuery):
+    """Unified handler for all callback buttons."""
+    await cq.answer()
+    s = get_session(cq.from_user.id)
     data = cq.data
 
+    # ---------- BASIC MENU ----------
     if data == "help":
         await cq.message.edit_text(
-            "📖 **How to use**\n\n"
-            "**Compress**: Tap Compress, send a PDF.\n"
-            "**Merge**: Tap Merge, send multiple PDFs, then send /done.\n"
-            "**Images→PDF**: Tap, send 1+ images in order, then /done.\n"
-            "**Scan**: Tap Scan, send a PDF; I’ll clean & deskew pages (OCR if available).\n"
-            "**Rename**: Tap Rename, send a file, then send the new name.\n\n"
+            "📖 **How to use this bot:**\n\n"
+            "• Compress → Send a PDF\n"
+            "• Merge → Send multiple PDFs, then /done\n"
+            "• Images→PDF → Send multiple images, then /done\n"
+            "• Scan → Send a PDF to clean & deskew\n"
+            "• Rename → Send a file, then a new name\n\n"
             "Use /cancel anytime.",
             reply_markup=home_kb()
         )
@@ -323,10 +328,11 @@ async def callbacks(client: Client, cq: CallbackQuery):
 
     if data == "reset":
         s.cleanup()
-        SESSIONS.pop(uid, None)
+        SESSIONS.pop(cq.from_user.id, None)
         await cq.message.edit_text("🧹 Workspace cleared.", reply_markup=home_kb())
         return
 
+    # ---------- START NEW MODES ----------
     if data == "compress":
         s.mode = Mode.IDLE
         s.target_file = None
@@ -336,27 +342,82 @@ async def callbacks(client: Client, cq: CallbackQuery):
     if data == "merge":
         s.mode = Mode.MERGE
         s.collected_files.clear()
-        await cq.message.edit_text("➕ Send **multiple PDFs** to merge (in order). When finished, send **/done**. Use /cancel to abort.")
+        await cq.message.edit_text("➕ Send **multiple PDFs** to merge (in order). When finished, send /done.")
         return
 
     if data == "img2pdf":
         s.mode = Mode.IMG2PDF
         s.collected_files.clear()
-        await cq.message.edit_text("🖼️ Send **images** (JPG/PNG) in order. When finished, send **/done**. Use /cancel to abort.")
+        await cq.message.edit_text("🖼️ Send **images** in order. When finished, send /done.")
         return
 
     if data == "scan":
         s.mode = Mode.IDLE
         s.target_file = None
-        await cq.message.edit_text("🖨️ Send the **PDF** you want to scan (clean & deskew).")
+        await cq.message.edit_text("🖨️ Send the **PDF** you want to scan.")
         return
 
     if data == "rename":
         s.mode = Mode.RENAME
         s.target_file = None
-        await cq.message.edit_text("✏️ Send the **file** (PDF or image) you want to rename.")
+        await cq.message.edit_text("✏️ Send the **file** you want to rename.")
         return
 
+    # ---------- PER-FILE ACTIONS ----------
+    if data == "compress_go":
+        if not s.target_file or not os.path.exists(s.target_file):
+            await cq.message.reply_text("⚠️ Please send a PDF first.")
+            return
+        in_path = s.target_file
+        out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
+        await cq.message.edit_text("🗜️ Compressing your PDF...\nPlease wait ⏳")
+
+        try:
+            before = os.path.getsize(in_path)
+            compress_pdf(in_path, out_path)
+            after = os.path.getsize(out_path)
+            reduced = (1 - after / before) * 100 if before else 0
+            await send_document_with_progress(
+                cq.message.chat.id,
+                out_path,
+                f"✅ Compression complete!\nReduced by **{reduced:.1f}%**",
+                reply_to=cq.message
+            )
+        except Exception as e:
+            await cq.message.reply_text(f"❌ Compression failed: `{e}`")
+        finally:
+            s.mode = Mode.IDLE
+            s.target_file = None
+        return
+
+    if data == "scan_go":
+        if not s.target_file or not os.path.exists(s.target_file):
+            await cq.message.reply_text("⚠️ Please send a PDF first.")
+            return
+        in_path = s.target_file
+        out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
+        await cq.message.edit_text("🖨️ Scanning your PDF...\nCleaning & deskewing ⚙️")
+
+        try:
+            pdf_scan(in_path, out_path, try_ocr=s.ocr_available)
+            msg = "✅ Scan complete!"
+            if s.ocr_available:
+                msg += " (with OCR)"
+            await send_document_with_progress(
+                cq.message.chat.id,
+                out_path,
+                msg,
+                reply_to=cq.message
+            )
+        except Exception as e:
+            await cq.message.reply_text(f"❌ Scan failed: `{e}`")
+        finally:
+            s.mode = Mode.IDLE
+            s.target_file = None
+        return
+
+    # ---------- FALLBACK ----------
+    await cq.answer("Unknown button clicked.", show_alert=True)
 # -----------------------------
 # /done handler
 # -----------------------------
