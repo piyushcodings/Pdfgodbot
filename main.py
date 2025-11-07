@@ -469,72 +469,69 @@ async def handle_files(client: Client, message: Message):
 
 # Quick action callbacks for idle PDFs
 # -----------------------------
-# Quick action callbacks for idle PDFs (Fixed)
-# -----------------------------
-@app.on_callback_query(filters.regex("^compress_go$"))
-async def compress_go_cb(client: Client, cq: CallbackQuery):
-    s = get_session(cq.from_user.id)
-    await cq.answer()  # acknowledge click to avoid loading animation
 
-    if not s.target_file or not os.path.exists(s.target_file):
-        await cq.answer("⚠️ No PDF loaded. Send a PDF first.", show_alert=True)
+@app.on_callback_query(filters.regex("compress_go"))
+async def handle_compress_callback(client: Client, cq: CallbackQuery):
+    """Handle inline button click for Compress"""
+    await cq.answer()  # acknowledge button press immediately
+    user_id = cq.from_user.id
+    session = get_session(user_id)
+
+    if not session.target_file or not os.path.exists(session.target_file):
+        await cq.message.reply_text("⚠️ Please send a PDF first.")
         return
 
-    in_path = s.target_file
-    out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
+    input_pdf = session.target_file
+    output_pdf = os.path.join(session.workdir, f"compressed_{int(time.time())}.pdf")
+    await cq.message.edit_text("🗜️ Compressing your PDF...\nPlease wait ⏳")
 
     try:
-        await cq.message.edit_text("🗜️ Compressing your PDF, please wait...")
-        before = os.path.getsize(in_path)
+        before = os.path.getsize(input_pdf)
+        compress_pdf(input_pdf, output_pdf)
+        after = os.path.getsize(output_pdf)
+        reduced = (1 - after / before) * 100 if before else 0
 
-        compress_pdf(in_path, out_path, quality=2)
-
-        after = os.path.getsize(out_path)
-        reduction = (1 - after / before) * 100 if before > 0 else 0
         await send_document_with_progress(
             cq.message.chat.id,
-            out_path,
-            f"✅ Compression complete!\nReduced by ~{reduction:.1f}%",
+            output_pdf,
+            f"✅ Compression complete! Reduced by **{reduced:.1f}%**",
             reply_to=cq.message
         )
     except Exception as e:
-        await cq.message.reply_text(f"❌ Compression failed.\n`{e}`")
-        print(f"[ERROR compress_go] {e}")
+        await cq.message.reply_text(f"❌ Compression failed: `{e}`")
+        print(f"[compress_go ERROR] {e}")
     finally:
-        s.mode = Mode.IDLE
-        s.target_file = None
+        session.mode = Mode.IDLE
+        session.target_file = None
 
 
-@app.on_callback_query(filters.regex("^scan_go$"))
-async def scan_go_cb(client: Client, cq: CallbackQuery):
-    s = get_session(cq.from_user.id)
-    await cq.answer()  # acknowledge click
+@app.on_callback_query(filters.regex("scan_go"))
+async def handle_scan_callback(client: Client, cq: CallbackQuery):
+    """Handle inline button click for Scan"""
+    await cq.answer()
+    user_id = cq.from_user.id
+    session = get_session(user_id)
 
-    if not s.target_file or not os.path.exists(s.target_file):
-        await cq.answer("⚠️ No PDF loaded. Send a PDF first.", show_alert=True)
+    if not session.target_file or not os.path.exists(session.target_file):
+        await cq.message.reply_text("⚠️ Please send a PDF first.")
         return
 
-    in_path = s.target_file
-    out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
+    input_pdf = session.target_file
+    output_pdf = os.path.join(session.workdir, f"scanned_{int(time.time())}.pdf")
+    await cq.message.edit_text("🖨️ Scanning your PDF...\nCleaning and deskewing pages ⚙️")
 
     try:
-        await cq.message.edit_text("🖨️ Scanning and cleaning pages...\nThis may take some time ⏳")
-
-        pdf_scan(in_path, out_path, try_ocr=s.ocr_available)
-
-        note = " (with OCR)" if s.ocr_available else ""
-        await send_document_with_progress(
-            cq.message.chat.id,
-            out_path,
-            f"✅ Scanned successfully{note}",
-            reply_to=cq.message
-        )
+        pdf_scan(input_pdf, output_pdf, try_ocr=session.ocr_available)
+        msg = "✅ Scan complete!"
+        if session.ocr_available:
+            msg += " (with OCR text recognition)"
+        await send_document_with_progress(cq.message.chat.id, output_pdf, msg, reply_to=cq.message)
     except Exception as e:
-        await cq.message.reply_text(f"❌ Scanning failed.\n`{e}`")
-        print(f"[ERROR scan_go] {e}")
+        await cq.message.reply_text(f"❌ Scanning failed: `{e}`")
+        print(f"[scan_go ERROR] {e}")
     finally:
-        s.mode = Mode.IDLE
-        s.target_file = None
+        session.mode = Mode.IDLE
+        session.target_file = None
 # -----------------------------
 # Rename text handler
 # -----------------------------
