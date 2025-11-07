@@ -142,20 +142,30 @@ def ensure_pdf(path: str) -> bool:
     except Exception:
         return False
 
-def compress_pdf(input_path: str, output_path: str, quality: int = 2):
-    """Compress PDF using pikepdf by optimizing images and removing junk objects."""
+def compress_pdf(input_path: str, output_path: str, quality: int = 75):
+    """
+    Compress PDF by re-rendering pages as new PDF using PyMuPDF.
+    Works with all pikepdf versions and doesn't need optimize_images.
+    """
     try:
-        with pikepdf.open(input_path) as pdf:
-            # Repair and optimize the PDF
-            pdf.save(
-                output_path,
-                optimize_images=True,
-                image_quality=80,  # lower = smaller size, 80 is good balance
-                linearize=True,
-                recompress_flate=True
-            )
+        doc = fitz.open(input_path)
+        new_doc = fitz.open()
+
+        for page in doc:
+            pix = page.get_pixmap(dpi=100)  # lower DPI = smaller size
+            img = fitz.Pixmap(pix, 0) if pix.alpha else pix
+            img_bytes = img.tobytes("jpeg", quality=quality)
+            img_rect = fitz.Rect(0, 0, pix.width, pix.height)
+            page_pdf = new_doc.new_page(width=img_rect.width, height=img_rect.height)
+            page_pdf.insert_image(img_rect, stream=img_bytes)
+
+        new_doc.save(output_path, deflate=True)
+        new_doc.close()
+        doc.close()
     except Exception as e:
         raise RuntimeError(f"Compression failed: {e}")
+
+
 def merge_pdfs(paths: List[str], output_path: str):
     merger = PdfMerger()
     for p in paths:
