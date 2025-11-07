@@ -222,29 +222,41 @@ def clean_scan(cv_img: np.ndarray) -> np.ndarray:
                                 cv2.THRESH_BINARY, 35, 15)
     return cv2.cvtColor(thr, cv2.COLOR_GRAY2BGR)
 
-def pdf_scan(input_path: str, output_path: str, try_ocr: bool):
-    # Render PDF pages to images, clean+deskew, re-assemble as PDF
+def pdf_scan(input_path: str, output_path: str, try_ocr: bool, progress_callback=None):
+    """
+    Scans PDF (deskew + clean) and optionally runs OCR.
+    Runs synchronously but supports progress updates.
+    """
     doc = fitz.open(input_path)
-    page_imgs = []
-    for page in doc:
+    total_pages = len(doc)
+    page_images = []
+
+    for idx, page in enumerate(doc, start=1):
         pix = page.get_pixmap(dpi=200, alpha=False)
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+
+        # clean + deskew
         img = deskew_image(img)
         img = clean_scan(img)
-        page_imgs.append(Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
-    # Save to temporary PDF
-    tmp_pdf = output_path if not try_ocr else output_path.replace(".pdf", "_clean.pdf")
-    images_to_pdf([save_temp_image(p) for p in page_imgs], tmp_pdf)
-    # OCR if available
-    if try_ocr:
-        try:
-            subprocess.run(["ocrmypdf", "--skip-text", "--fast-web-view", tmp_pdf, output_path],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.remove(tmp_pdf)
-        except Exception:
-            # Fallback to cleaned non-OCR PDF
-            shutil.move(tmp_pdf, output_path)
+        page_images.append(Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
 
+        # send live progress
+        if progress_callback:
+            progress_callback(idx, total_pages)
+
+    # Save scanned pages as new PDF
+    temp_images = [save_temp_image(p) for p in page_images]
+    images_to_pdf(temp_images, output_path)
+
+    # Run OCR if available
+    if try_ocr:
+        ocr_out = output_path.replace(".pdf", "_ocr.pdf")
+        try:
+            subprocess.run(["ocrmypdf", "--skip-text", "--fast-web-view", output_path, ocr_out],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.move(ocr_out, output_path)
+        except Exception as e:
+            print("OCR skipped:", e)
 def save_temp_image(img: Image.Image) -> str:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
     img.save(tmp.name, "JPEG", quality=95)
@@ -412,26 +424,37 @@ async def all_callbacks(client: Client, cq: CallbackQuery):
         if not s.target_file or not os.path.exists(s.target_file):
             await cq.message.reply_text("⚠️ Please send a PDF first.")
             return
+
         in_path = s.target_file
         out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
-        await cq.message.edit_text("🖨️ Scanning your PDF...\nCleaning & deskewing ⚙️")
+        msg = await cq.message.edit_text("🖨️ Starting scan...")
 
-        try:
-            pdf_scan(in_path, out_path, try_ocr=s.ocr_available)
-            msg = "✅ Scan complete!"
-            if s.ocr_available:
-                msg += " (with OCR)"
-            await send_document_with_progress(
-                cq.message.chat.id,
-                out_path,
-                msg,
-                reply_to=cq.message
-            )
-        except Exception as e:
-            await cq.message.reply_text(f"❌ Scan failed: `{e}`")
-        finally:
-            s.mode = Mode.IDLE
-            s.target_file = None
+        async def run_scan():
+            last_update = 0
+
+            def progress_callback(current, total):
+                nonlocal last_update
+                now = time.time()
+                if now - last_update > 1:  # throttle updates
+                    last_update = now
+                    asyncio.run_coroutine_threadsafe(
+                        msg.edit_text(f"🖨️ Scanning... Page {current}/{total}"),
+                        app.loop
+                    )
+
+            try:
+                await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
+                note = " (with OCR)" if s.ocr_available else ""
+                await msg.edit_text("✅ Scan complete! Uploading...")
+                await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}", reply_to=cq.message)
+            except Exception as e:
+                await msg.edit_text(f"❌ Scan failed: `{e}`")
+            finally:
+                s.mode = Mode.IDLE
+                s.target_file = None
+
+        # Run the scan in background
+        asyncio.create_task(run_scan())
         return
 
     # ---------- FALLBACK ----------
