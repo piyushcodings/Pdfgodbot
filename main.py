@@ -468,46 +468,73 @@ async def handle_files(client: Client, message: Message):
             await message.reply_text("File received, but I’m not sure what to do. Pick an action.", reply_markup=home_kb())
 
 # Quick action callbacks for idle PDFs
-@ app.on_callback_query(filters.regex("^compress_go$"))
+# -----------------------------
+# Quick action callbacks for idle PDFs (Fixed)
+# -----------------------------
+@app.on_callback_query(filters.regex("^compress_go$"))
 async def compress_go_cb(client: Client, cq: CallbackQuery):
     s = get_session(cq.from_user.id)
+    await cq.answer()  # acknowledge click to avoid loading animation
+
     if not s.target_file or not os.path.exists(s.target_file):
-        await cq.answer("No PDF on hand. Send a PDF first.", show_alert=True)
+        await cq.answer("⚠️ No PDF loaded. Send a PDF first.", show_alert=True)
         return
-    await cq.message.edit_text("🗜️ Compressing...")
+
     in_path = s.target_file
     out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
+
     try:
+        await cq.message.edit_text("🗜️ Compressing your PDF, please wait...")
         before = os.path.getsize(in_path)
+
         compress_pdf(in_path, out_path, quality=2)
+
         after = os.path.getsize(out_path)
-        ratio = (1 - after / before) * 100 if before else 0
-        await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Compressed (~{ratio:.1f}% smaller)")
+        reduction = (1 - after / before) * 100 if before > 0 else 0
+        await send_document_with_progress(
+            cq.message.chat.id,
+            out_path,
+            f"✅ Compression complete!\nReduced by ~{reduction:.1f}%",
+            reply_to=cq.message
+        )
     except Exception as e:
-        await cq.message.reply_text(f"❌ Compression failed: {e}")
+        await cq.message.reply_text(f"❌ Compression failed.\n`{e}`")
+        print(f"[ERROR compress_go] {e}")
     finally:
         s.mode = Mode.IDLE
         s.target_file = None
 
-@ app.on_callback_query(filters.regex("^scan_go$"))
+
+@app.on_callback_query(filters.regex("^scan_go$"))
 async def scan_go_cb(client: Client, cq: CallbackQuery):
     s = get_session(cq.from_user.id)
+    await cq.answer()  # acknowledge click
+
     if not s.target_file or not os.path.exists(s.target_file):
-        await cq.answer("No PDF on hand. Send a PDF first.", show_alert=True)
+        await cq.answer("⚠️ No PDF loaded. Send a PDF first.", show_alert=True)
         return
-    await cq.message.edit_text("🖨️ Scanning (clean & deskew)...")
+
     in_path = s.target_file
     out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
+
     try:
+        await cq.message.edit_text("🖨️ Scanning and cleaning pages...\nThis may take some time ⏳")
+
         pdf_scan(in_path, out_path, try_ocr=s.ocr_available)
-        note = " with OCR" if s.ocr_available else ""
-        await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}")
+
+        note = " (with OCR)" if s.ocr_available else ""
+        await send_document_with_progress(
+            cq.message.chat.id,
+            out_path,
+            f"✅ Scanned successfully{note}",
+            reply_to=cq.message
+        )
     except Exception as e:
-        await cq.message.reply_text(f"❌ Scan failed: {e}")
+        await cq.message.reply_text(f"❌ Scanning failed.\n`{e}`")
+        print(f"[ERROR scan_go] {e}")
     finally:
         s.mode = Mode.IDLE
         s.target_file = None
-
 # -----------------------------
 # Rename text handler
 # -----------------------------
