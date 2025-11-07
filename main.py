@@ -143,11 +143,19 @@ def ensure_pdf(path: str) -> bool:
         return False
 
 def compress_pdf(input_path: str, output_path: str, quality: int = 2):
-    # quality 0=lossless, 2=default, 3=strong
-    with pikepdf.open(input_path) as pdf:
-        # Optimize images
-        pdf.save(output_path, optimize_images=True, compression=pikepdf.CompressionLevel.default if quality==2 else pikepdf.CompressionLevel.maximum, object_stream_mode=pikepdf.ObjectStreamMode.generate, linearize=True)
-
+    """Compress PDF using pikepdf by optimizing images and removing junk objects."""
+    try:
+        with pikepdf.open(input_path) as pdf:
+            # Repair and optimize the PDF
+            pdf.save(
+                output_path,
+                optimize_images=True,
+                image_quality=80,  # lower = smaller size, 80 is good balance
+                linearize=True,
+                recompress_flate=True
+            )
+    except Exception as e:
+        raise RuntimeError(f"Compression failed: {e}")
 def merge_pdfs(paths: List[str], output_path: str):
     merger = PdfMerger()
     for p in paths:
