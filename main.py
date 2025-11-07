@@ -436,13 +436,14 @@ async def done_cmd(_, m: Message):
 # Unified callback handler (no conflicts)
 # -----------------------------
 # -----------------------------
+# -----------------------------
 @app.on_callback_query()
 async def all_callbacks(_: Client, cq: CallbackQuery):
     await cq.answer()
     s = get_session(cq.from_user.id)
     data = cq.data
 
-    # BASIC MENU
+    # BASIC MENU -------------------------------------------------------------
     if data == "help":
         await cq.message.edit_text(
             "📖 **How to use**\n\n"
@@ -464,7 +465,7 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
         await cq.message.edit_text("🧹 Workspace cleared.", reply_markup=home_kb())
         return
 
-    # START MODES
+    # START MODES -------------------------------------------------------------
     if data == "compress":
         s.mode = Mode.IDLE
         s.target_file = None
@@ -495,7 +496,7 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
         await cq.message.edit_text("✏️ Send the **file** you want to rename.")
         return
 
-    # PER-FILE QUICK ACTIONS
+    # PER-FILE QUICK ACTIONS -------------------------------------------------
     if data == "compress_go":
         if not s.target_file or not os.path.exists(s.target_file):
             await cq.message.reply_text("⚠️ Please send a PDF first.")
@@ -505,26 +506,24 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
         out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
         msg = await cq.message.edit_text("🗜️ Starting compression...")
 
-        # ✅ Capture the main event loop
-        main_loop = asyncio.get_running_loop()
+        main_loop = asyncio.get_running_loop()  # capture loop before thread
 
         async def run_compress():
             last_update = 0
 
             def progress_callback(cur, total):
-                """Called from background thread by compress_pdf_smart"""
                 nonlocal last_update
                 now = time.time()
-                if now - last_update > 1:  # throttle ~1s
+                if now - last_update > 1:
                     last_update = now
-                    fut = asyncio.run_coroutine_threadsafe(
-                        msg.edit_text(f"🗜️ Compressing... Page {cur}/{total}"),
-                        main_loop
-                    )
-                    try:
-                        fut.result(0)
-                    except Exception:
-                        pass
+
+                    async def _edit():
+                        try:
+                            await msg.edit_text(f"🗜️ Compressing... Page {cur}/{total}")
+                        except Exception:
+                            pass
+
+                    asyncio.run_coroutine_threadsafe(_edit(), main_loop)
 
             try:
                 before = os.path.getsize(in_path)
@@ -566,26 +565,24 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
         out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
         msg = await cq.message.edit_text("🖨️ Starting scan...")
 
-        # ✅ Capture the main event loop
         main_loop = asyncio.get_running_loop()
 
         async def run_scan():
             last_update = 0
 
             def progress_callback(cur, total):
-                """Called from background thread by pdf_scan"""
                 nonlocal last_update
                 now = time.time()
                 if now - last_update > 1:
                     last_update = now
-                    fut = asyncio.run_coroutine_threadsafe(
-                        msg.edit_text(f"🖨️ Scanning... Page {cur}/{total}"),
-                        main_loop
-                    )
-                    try:
-                        fut.result(0)
-                    except Exception:
-                        pass
+
+                    async def _edit():
+                        try:
+                            await msg.edit_text(f"🖨️ Scanning... Page {cur}/{total}")
+                        except Exception:
+                            pass
+
+                    asyncio.run_coroutine_threadsafe(_edit(), main_loop)
 
             try:
                 await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
@@ -617,8 +614,6 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
         return
 
     await cq.answer("Unknown action.", show_alert=True)
-# Rename text input
-# -----------------------------
 @app.on_message(filters.text & filters.private)
 async def handle_text(_, m: Message):
     s = get_session(m.from_user.id)
