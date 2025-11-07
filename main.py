@@ -484,79 +484,112 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
 
     # PER-FILE QUICK ACTIONS
     if data == "compress_go":
-        if not s.target_file or not os.path.exists(s.target_file):
-            await cq.message.reply_text("⚠️ Please send a PDF first."); return
-
-        in_path = s.target_file
-        out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
-        msg = await cq.message.edit_text("🗜️ Starting compression...")
-
-        async def run_compress():
-            last_update = 0
-            def progress_callback(cur, total):
-                nonlocal last_update
-                now = time.time()
-                if now - last_update > 1:
-                    last_update = now
-                    loop = asyncio.get_running_loop()
-                    loop.call_soon_threadsafe(
-                        asyncio.create_task,
-                        msg.edit_text(f"🗜️ Compressing... Page {cur}/{total}")
-                    )
-            try:
-                before = os.path.getsize(in_path)
-                await asyncio.to_thread(compress_pdf_smart, in_path, out_path, progress_callback)
-                after = os.path.getsize(out_path)
-                red = (1 - after/before)*100 if before else 0
-                await msg.edit_text("✅ Compression complete! Uploading...")
-                await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Compressed (~{red:.1f}% smaller)")
-            except asyncio.CancelledError:
-                # best-effort clean
-                try: os.remove(out_path)
-                except Exception: pass
-                await msg.edit_text("❌ Compression cancelled.")
-            except Exception as e:
-                await msg.edit_text(f"❌ Compression failed: `{e}`")
-            finally:
-                s.mode = Mode.IDLE
-                s.target_file = None
-                s.current_task = None
-
-        # allow one running job per user; still many users can run in parallel
-        if s.current_task and not s.current_task.done():
-            await cq.message.reply_text("⚠️ Another job is running. Send /cancel to stop it first.")
-            return
-        s.current_task = asyncio.create_task(run_compress())
+    if not s.target_file or not os.path.exists(s.target_file):
+        await cq.message.reply_text("⚠️ Please send a PDF first.")
         return
+
+    in_path = s.target_file
+    out_path = os.path.join(s.workdir, f"compressed_{int(time.time())}.pdf")
+    msg = await cq.message.edit_text("🗜️ Starting compression...")
+
+    # ✅ Capture the main loop BEFORE starting the thread
+    main_loop = asyncio.get_running_loop()
+
+    async def run_compress():
+        last_update = 0
+
+        def progress_callback(cur, total):
+            """Called from background thread by compress_pdf_smart"""
+            nonlocal last_update
+            now = time.time()
+            if now - last_update > 1:  # throttle ~1s
+                last_update = now
+                fut = asyncio.run_coroutine_threadsafe(
+                    msg.edit_text(f"🗜️ Compressing... Page {cur}/{total}"),
+                    main_loop
+                )
+                # ignore result; prevents occasional warnings
+                try:
+                    fut.result(0)
+                except Exception:
+                    pass
+
+        try:
+            before = os.path.getsize(in_path)
+            # run compression in a background thread
+            await asyncio.to_thread(compress_pdf_smart, in_path, out_path, progress_callback)
+            after = os.path.getsize(out_path)
+            red = (1 - after / before) * 100 if before else 0
+            await msg.edit_text("✅ Compression complete! Uploading...")
+            await send_document_with_progress(
+                cq.message.chat.id,
+                out_path,
+                f"✅ Compressed (~{red:.1f}% smaller)"
+            )
+        except asyncio.CancelledError:
+            try: os.remove(out_path)
+            except Exception: pass
+            await msg.edit_text("❌ Compression cancelled.")
+        except Exception as e:
+            await msg.edit_text(f"❌ Compression failed: `{e}`")
+        finally:
+            s.mode = Mode.IDLE
+            s.target_file = None
+            s.current_task = None
+
+    if s.current_task and not s.current_task.done():
+        await cq.message.reply_text("⚠️ Another job is running. Send /cancel to stop it first.")
+        return
+    s.current_task = asyncio.create_task(run_compress())
+    return
 
     if data == "scan_go":
         if not s.target_file or not os.path.exists(s.target_file):
-            await cq.message.reply_text("⚠️ Please send a PDF first."); return
+            await cq.message.reply_text("⚠️ Please send a PDF first.")
+            return
 
         in_path = s.target_file
         out_path = os.path.join(s.workdir, f"scanned_{int(time.time())}.pdf")
         msg = await cq.message.edit_text("🖨️ Starting scan...")
 
+        # ✅ Capture the current event loop (main loop)
+        main_loop = asyncio.get_event_loop()
+
         async def run_scan():
             last_update = 0
+
             def progress_callback(cur, total):
+                """Called from background thread by pdf_scan"""
                 nonlocal last_update
                 now = time.time()
                 if now - last_update > 1:
                     last_update = now
-                    loop = asyncio.get_running_loop()
-                    loop.call_soon_threadsafe(
-                        asyncio.create_task,
-                        msg.edit_text(f"🖨️ Scanning... Page {cur}/{total}")
+                    # ✅ Schedule coroutine safely on main loop
+                    fut = asyncio.run_coroutine_threadsafe(
+                        msg.edit_text(f"🖨️ Scanning... Page {cur}/{total}"),
+                        main_loop
                     )
+                    # handle occasional runtime warnings silently
+                    try:
+                        fut.result(0)
+                    except Exception:
+                        pass
+
             try:
+                # Run scan in background thread
                 await asyncio.to_thread(pdf_scan, in_path, out_path, s.ocr_available, progress_callback)
                 note = " (with OCR)" if s.ocr_available else ""
                 await msg.edit_text("✅ Scan complete! Uploading...")
-                await send_document_with_progress(cq.message.chat.id, out_path, f"✅ Scanned{note}")
+                await send_document_with_progress(
+                    cq.message.chat.id,
+                    out_path,
+                    f"✅ Scanned{note}"
+                )
             except asyncio.CancelledError:
-                try: os.remove(out_path)
-                except Exception: pass
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
                 await msg.edit_text("❌ Scan cancelled.")
             except Exception as e:
                 await msg.edit_text(f"❌ Scan failed: `{e}`")
@@ -565,12 +598,13 @@ async def all_callbacks(_: Client, cq: CallbackQuery):
                 s.target_file = None
                 s.current_task = None
 
+        # Avoid parallel scans for same user
         if s.current_task and not s.current_task.done():
             await cq.message.reply_text("⚠️ Another job is running. Send /cancel to stop it first.")
             return
+
         s.current_task = asyncio.create_task(run_scan())
         return
-
     await cq.answer("Unknown action.", show_alert=True)
 
 # -----------------------------
